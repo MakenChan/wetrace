@@ -73,7 +73,8 @@ func (d *DllLoader) PollKeyData() (string, bool) {
 		for n < len(buffer) && buffer[n] != 0 {
 			n++
 		}
-		return string(buffer[:n]), true
+		// PollKeyData 返回的是 hex 字符串（ASCII），但保险起见仍走 ANSI 转换
+		return ansiBytesToUTF8(buffer[:n]), true
 	}
 
 	return "", false
@@ -98,7 +99,8 @@ func (d *DllLoader) GetStatusMessage() (string, int, bool) {
 		for n < len(buffer) && buffer[n] != 0 {
 			n++
 		}
-		return string(buffer[:n]), int(level), true
+		// C++ DLL 返回的消息使用系统 ANSI 代码页（简中系统为 GBK），需要转换为 UTF-8
+		return ansiBytesToUTF8(buffer[:n]), int(level), true
 	}
 
 	return "", 0, false
@@ -124,23 +126,17 @@ func (d *DllLoader) GetLastErrorMsg() string {
 		return "Unknown error"
 	}
 
+	// 从 C 返回的 char* 读取 null-terminated 字节流
 	ptr := unsafe.Pointer(ret)
-	// Assuming the returned pointer is a C string (char*)
-	// We need to read it until null terminator.
-	// Since we don't know the length, we'll scan.
-	// WARNING: If it returns a static buffer, this is fine.
-	// If it returns allocated memory that caller must free, we might leak (but C++ code usually returns static/thread-local const char* for GetLastError).
-
-	// Create a Go string from the C string
-	// Using a loop to find null terminator
-	var s string
+	var raw []byte
 	for {
 		b := *(*byte)(ptr)
 		if b == 0 {
 			break
 		}
-		s += string(b)
+		raw = append(raw, b)
 		ptr = unsafe.Pointer(uintptr(ptr) + 1)
 	}
-	return s
+	// C++ DLL 返回的消息使用系统 ANSI 代码页（简中系统为 GBK），需要转换为 UTF-8
+	return ansiBytesToUTF8(raw)
 }

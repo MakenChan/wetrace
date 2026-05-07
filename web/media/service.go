@@ -301,23 +301,38 @@ func (s *Service) prepareImageWithFallback(relativePath string, isThumb bool) Pr
 		base = strings.TrimSuffix(base, base[len(base)-2:])
 	}
 
-	if isThumb {
-		// 缩略图模式优先级：_t.dat -> .dat -> 原路径
-		candidates = []string{
-			base + "_t.dat",
-			base + ".dat",
-			base,
-			relativePath,
+	// 微信 4 迁移老图时对文件名加了变体后缀，数据库里 Path 只存"基础 md5"。
+	// 观察到的命名规则：
+	//   {md5}.dat            - V4 原生原图
+	//   {md5}_t.dat          - V4 原生缩略图
+	//   {md5}_W.dat          - 迁移自 V3 的原图（Wide，原图还在）
+	//   {md5}_H.dat          - 迁移自 V3 的中等尺寸
+	//   {md5}_t_W.dat        - 迁移自 V3，原图已丢，只剩缩略图（复合后缀）
+	//   {md5}_t_H.dat        - 迁移自 V3，中等尺寸缩略图
+	// Windows 文件系统不区分大小写，但为 Linux/Mac 兼容同时保留两种写法。
+	//
+	// 原则：isThumb=true 先找缩略，isThumb=false 先找原图；找不到再跨类降级。
+	thumbVariants := []string{"_t.dat", "_t_w.dat", "_t_W.dat", "_t_h.dat", "_t_H.dat"}
+	fullVariants := []string{".dat", "_w.dat", "_W.dat", "_h.dat", "_H.dat"}
+
+	appendAll := func(dst []string, suffixes []string) []string {
+		for _, suf := range suffixes {
+			dst = append(dst, base+suf)
 		}
-	} else {
-		// 原图模式优先级：.dat -> 原路径 -> _t.dat (回退)
-		candidates = []string{
-			base + ".dat",
-			base,
-			relativePath,
-			base + "_t.dat",
-		}
+		return dst
 	}
+
+	if isThumb {
+		// 缩略图优先：先试所有缩略变体，再降级到原图变体（缩略缺失时用原图显示）
+		candidates = appendAll(candidates, thumbVariants)
+		candidates = appendAll(candidates, fullVariants)
+	} else {
+		// 原图优先：先试所有原图变体，再降级到缩略变体（原图丢失时兜底显示）
+		candidates = appendAll(candidates, fullVariants)
+		candidates = appendAll(candidates, thumbVariants)
+	}
+	// 兜底：基础名（无扩展）和传入的原始路径
+	candidates = append(candidates, base, relativePath)
 
 	// 去重并过滤空
 	seen := make(map[string]bool)
@@ -363,10 +378,17 @@ func (s *Service) doPrepareFile(absolutePath string, isVideo bool) PreparedMedia
 		if isDat {
 			cachePath := filepath.Join(s.DataDir, "cache", "images", relPath)
 			if cacheContent, err := os.ReadFile(cachePath); err == nil {
-				return PreparedMedia{
-					Content:     cacheContent,
-					ContentType: detectContentType(cacheContent),
+				ct := detectContentType(cacheContent)
+				// 防御：旧版本可能把"解密成功但非图片"的内容（如实况照片的 mp4）写进了缓存。
+				// 这里识别到非图片缓存时直接忽略，让流程走到下面重新解密 + 上层 fallback。
+				if strings.HasPrefix(ct, "image/") {
+					return PreparedMedia{
+						Content:     cacheContent,
+						ContentType: ct,
+					}
 				}
+				log.Warn().Str("cache", cachePath).Str("detected", ct).
+					Msg("发现历史坏缓存（非图片内容），跳过并重新解密")
 			}
 		}
 	}
@@ -388,8 +410,10 @@ func (s *Service) doPrepareFile(absolutePath string, isVideo bool) PreparedMedia
 	var res PreparedMedia
 	if isDat {
 		res = s.prepareDatFile(absolutePath)
-		// 解密成功后，异步写入缓存
-		if res.Error == nil {
+		// 解密成功且**确实是图片**才写入缓存。
+		// 严禁把 application/octet-stream / video/* 等非图片内容写进 image cache，
+		// 否则下次请求命中缓存，前端会拿到无法渲染的数据。
+		if res.Error == nil && strings.HasPrefix(res.ContentType, "image/") {
 			cachePath := filepath.Join(s.DataDir, "cache", "images", relPath)
 			go func(path string, content []byte) {
 				os.MkdirAll(filepath.Dir(path), 0755)
@@ -462,7 +486,19 @@ func (s *Service) ensureVideoTranscoded(srcPath string) (string, error) {
 	return dstPath, nil
 }
 
-func (s *Service) prepareDatFile(path string) PreparedMedia {
+func (s *Service) prepareDatFile(path string) (result PreparedMedia) {
+	// 兜底 recover：防止 dat2img 或其依赖的第三方库（如 mp4ff）发生 panic 时
+	// 拖垮整个进程（runCacheTask 会并发跑数百个 goroutine）
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().
+				Interface("panic", r).
+				Str("path", path).
+				Msg("解码 .dat 文件时发生 panic，已恢复")
+			result = PreparedMedia{Error: fmt.Errorf("decode dat panic: %v", r)}
+		}
+	}()
+
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return PreparedMedia{Error: fmt.Errorf("读取 .dat 文件失败: %w", err)}
@@ -475,9 +511,26 @@ func (s *Service) prepareDatFile(path string) PreparedMedia {
 
 	out, ext, err := dat2img.Dat2Image(b)
 	if err != nil {
-		// 如果解码失败，则回退到提供原始数据
-		log.Warn().Err(err).Str("path", path).Msg("解码 .dat 文件失败，提供原始数据。")
-		return PreparedMedia{Content: b, ContentType: "application/octet-stream"}
+		// 关键：失败时必须返回 Error，**绝不能**把原始密文/明文当成图片回退给前端。
+		// 历史上这个分支曾经返回 (Content: b, ContentType: "application/octet-stream")，
+		// 导致：
+		//   1. iPhone 实况照片的 .dat（其实是 mp4 视频）被当成"成功"写入 cache/images，
+		//      之后每次请求都命中坏缓存，浏览器拿到 octet-stream 拒绝渲染；
+		//   2. prepareImageWithFallback 看到 res.Error == nil，就不会继续 fallback 到 _h.dat。
+		// 现在改为返回明确的错误，让上层 fallback 能继续尝试下一个候选（_h.dat 才是高清原图）。
+		log.Warn().Err(err).Str("path", path).Msg("解码 .dat 文件失败")
+		return PreparedMedia{Error: fmt.Errorf("解码 .dat 失败: %w", err)}
+	}
+
+	// 防御：dat2img.Dat2Image 对于微信动图（wxgf）会调用 Wxam2pic，
+	// 在没有 ffmpeg 时会把多帧动图转成 mp4 返回（ext="mp4"）。
+	// 但前端 /media/image/ 接口期望的是静态图片，<img> 无法播放 mp4。
+	// 这里把 mp4 当成"非图片"处理，让上层 prepareImageWithFallback 继续
+	// 走 fallback 链（最终命中 _t.dat 的 JPG 缩略图）。
+	if ext == "mp4" || ext == "" || strings.HasPrefix(getMimeTypeByExtension(ext), "video/") {
+		log.Warn().Str("path", path).Str("ext", ext).
+			Msg("解码出来不是静态图片（可能是动图/视频），跳过当前候选")
+		return PreparedMedia{Error: fmt.Errorf("解码结果不是静态图片: ext=%s", ext)}
 	}
 
 	contentType := getMimeTypeByExtension(ext)

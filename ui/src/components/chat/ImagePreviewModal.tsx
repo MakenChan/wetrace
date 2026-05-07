@@ -31,7 +31,12 @@ export function ImagePreviewModal() {
 
   if (!isOpen || !currentImage) return null
 
-  const imageUrl = currentImage.content || mediaApi.getImageUrl(currentImage.md5, currentImage.path)
+  // 预览弹窗永远请求原图。不使用 currentImage.content 作为 fallback——
+  // 因为列表缩略图可能把 thumb URL 存在 content 里，如果这里复用就永远显示小图。
+  // 只有在确实没有 md5 时才退回到 content（极少数无 md5 的老消息）。
+  const imageUrl = currentImage.md5
+    ? mediaApi.getImageUrl(currentImage.md5, currentImage.path)
+    : (currentImage.content || "")
 
   return createPortal(
     <div 

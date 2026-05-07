@@ -262,9 +262,22 @@ func isFFmpegAvailable() bool {
 	return cmd.Run() == nil
 }
 
-func Transmux2MP4(data []byte) ([]byte, error) {
+func Transmux2MP4(data []byte) (_ []byte, retErr error) {
+	// 防御 mp4ff 库内部可能的 panic（如 NALU 切片为空时的越界访问）
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("transmux mp4 panic: %v", r)
+		}
+	}()
 
 	vpsNALUs, spsNALUs, ppsNALUs := hevc.GetParameterSetsFromByteStream(data)
+
+	// mp4ff 的 SetHEVCDescriptor 在 spsNALUs 为空时会直接 spsNALUs[0] 越界
+	// 这通常意味着 .dat 文件损坏或并非标准 HEVC 字节流
+	if len(spsNALUs) == 0 || len(vpsNALUs) == 0 || len(ppsNALUs) == 0 {
+		return nil, fmt.Errorf("invalid hevc bitstream: missing parameter sets (vps=%d, sps=%d, pps=%d)",
+			len(vpsNALUs), len(spsNALUs), len(ppsNALUs))
+	}
 
 	videoTimescale := uint32(1000)
 	init := mp4.CreateEmptyInit()
@@ -341,12 +354,28 @@ func TransmuxAnime2MP4(animeFrames [][]byte, maskFrames [][]byte) ([]byte, error
 	return sw.Bytes(), nil
 }
 
-func Add2Trak(init *mp4.InitSegment, frag *mp4.Fragment, index int, data [][]byte) error {
+func Add2Trak(init *mp4.InitSegment, frag *mp4.Fragment, index int, data [][]byte) (retErr error) {
+	// 防御 mp4ff 库内部可能的 panic（如 NALU 切片为空时的越界访问）
+	defer func() {
+		if r := recover(); r != nil {
+			retErr = fmt.Errorf("add2trak panic: %v", r)
+		}
+	}()
+
+	if len(data) == 0 {
+		return fmt.Errorf("empty frame data")
+	}
+
 	videoTimescale := uint32(90000)
 	init.AddEmptyTrack(videoTimescale, "video", "und")
 	trak := init.Moov.Traks[index]
 
 	vps, sps, pps := hevc.GetParameterSetsFromByteStream(data[0])
+
+	if len(sps) == 0 || len(vps) == 0 || len(pps) == 0 {
+		return fmt.Errorf("invalid hevc bitstream in anime frame: missing parameter sets (vps=%d, sps=%d, pps=%d)",
+			len(vps), len(sps), len(pps))
+	}
 
 	// FIXME  Two slices reporting being the first in the same frame.
 	if FixSliceHeaders {

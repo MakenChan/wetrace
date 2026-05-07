@@ -357,12 +357,12 @@ export function KeyManagerModal({ onClose }: Props) {
              {/* DB Path */}
              <div className="space-y-2">
                 <label className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                    数据存储路径 (包含 wxid_xxx 文件夹)
+                    数据存储路径 (微信账号数据目录)
                     <span className="text-destructive font-bold">* 核心配置</span>
                 </label>
                 {(error?.includes("数据存储路径") || (!loading && !dbSrcPath)) && (
                     <p className="text-[11px] text-destructive font-bold animate-pulse">
-                        {"⚠️ 找不到数据？请在手机微信中点击：设置 -> 文件管理 -> 打开文件夹，在电脑窗口中向上退一级，找到包含 wxid_xxxx 的目录路径复制到下方。"}
+                        {"⚠️ 找不到数据？请在手机微信中点击：设置 -> 文件管理 -> 打开文件夹，在电脑窗口中找到账号数据目录（其内部通常含 db_storage / msg / FileStorage 等子目录），复制完整路径到下方。"}
                     </p>
                 )}
                 <div className="flex gap-2">
@@ -387,9 +387,9 @@ export function KeyManagerModal({ onClose }: Props) {
                         <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                         <div className="text-xs font-medium leading-relaxed">
                             <p className="font-bold mb-1 text-sm">⚠️ 该路径配置至关重要：</p>
-                            <p>1. 路径必须指向包含 <code className="bg-destructive/10 dark:bg-red-900/20 px-1 rounded font-bold border border-destructive/20">wxid_xxxx</code> 文件夹的目录。</p>
-                            <p>2. 路径错误或未包含用户信息目录将导致<span className="underline font-bold">无法读取聊天记录</span>。</p>
-                            <p>3. 若解密后<span className="underline font-bold">没有看到任何数据</span>，请核对该目录下是否存在以 <code className="font-mono bg-destructive/5 px-1">wxid_</code> 开头的文件夹。</p>
+                            <p>1. 路径应指向<span className="font-bold">账号数据目录</span>（目录内部一般含 <code className="bg-destructive/10 dark:bg-red-900/20 px-1 rounded font-bold border border-destructive/20">db_storage</code> / <code className="bg-destructive/10 dark:bg-red-900/20 px-1 rounded font-bold border border-destructive/20">msg</code> / <code className="bg-destructive/10 dark:bg-red-900/20 px-1 rounded font-bold border border-destructive/20">FileStorage</code> 等子目录）。</p>
+                            <p>2. 若是旧版微信，该目录名常以 <code className="font-mono bg-destructive/5 px-1">wxid_</code> 开头；新版微信则可能是自定义账号名，均可。</p>
+                            <p>3. 路径错误或未包含用户信息目录将导致<span className="underline font-bold">无法读取聊天记录</span>。</p>
                         </div>
                     </div>
                 </div>

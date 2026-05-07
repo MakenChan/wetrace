@@ -27,6 +27,14 @@ go.work.sum
 # syncthing files
 .stfolder
 
-chatlog.exe# Added by goreleaser init:
+chatlog.exe
+wetrace.exe
+
+# 本地调试/测试用的一次性命令
+cmd/
+
+# Added by goreleaser init:
 dist/
 .idea/
+bad_cache_list.txt
+ffmpeg/ffmpeg.exe
