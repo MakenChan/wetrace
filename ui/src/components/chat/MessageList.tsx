@@ -4,14 +4,16 @@ import { useMessages } from "@/hooks/useChatLog"
 import { useChat } from "@/hooks/useChat"
 import { MessageBubble } from "./MessageBubble"
 import { isSameDay, format } from "date-fns"
+import { zhCN } from "date-fns/locale"
 import { formatMessageTime } from "@/lib/date"
 import { MessageType } from "@/types/message"
 import { useImagePreviewStore } from "@/stores/image-preview"
 import { ImagePreviewModal } from "./ImagePreviewModal"
-import { ChevronUp, Calendar as CalendarIcon, Search, X as CloseIcon } from "lucide-react"
+import { ChevronUp, Calendar as CalendarIcon, Mic, Search, X as CloseIcon } from "lucide-react"
 import { Button } from "../ui/button"
 import { Input } from "../ui/input"
 import { DatePickerModal } from "./DatePickerModal"
+import { VoiceMissingModal } from "./VoiceMissingModal"
 import { useSearchParams } from "react-router-dom"
 
 export function MessageList() {
@@ -23,6 +25,7 @@ export function MessageList() {
   const setImages = useImagePreviewStore(state => state.setImages)
   const [showScrollTop, setShowScrollTop] = useState(false)
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false)
+  const [isVoiceMissingOpen, setIsVoiceMissingOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [isSearching, setIsSearching] = useState(false)
   
@@ -64,12 +67,18 @@ export function MessageList() {
       const prevDate = prevMsg ? new Date(prevMsg.createTime * 1000) : null
       
       let shouldShowTime = false
+      let isDayBreak = false
       if (!prevDate) {
         shouldShowTime = true
+        isDayBreak = true
       } else {
         const timeDiff = msg.createTime - prevMsg.createTime
-        if (timeDiff > SHOW_TIME_THRESHOLD || !isSameDay(msgDate, prevDate)) {
+        const differentDay = !isSameDay(msgDate, prevDate)
+        if (timeDiff > SHOW_TIME_THRESHOLD || differentDay) {
           shouldShowTime = true
+        }
+        if (differentDay) {
+          isDayBreak = true
         }
       }
 
@@ -80,9 +89,20 @@ export function MessageList() {
           dMap[dateKey] = res.length
         }
 
+        // For day-break, split into big day label + small time label.
+        // For same-day intra-gap, keep a subtle relative time chip.
+        let dayLabel = ''
+        let timeLabel = ''
+        if (isDayBreak) {
+          dayLabel = format(msgDate, 'yyyy-MM-dd eeee', { locale: zhCN })
+          timeLabel = format(msgDate, 'HH:mm')
+        } else {
+          timeLabel = formatMessageTime(msg.createTime * 1000)
+        }
+
         res.push({
           type: 'date',
-          data: formatMessageTime(msg.createTime * 1000)
+          data: { isDayBreak, dayLabel, timeLabel, dateKey }
         })
       }
       
@@ -182,10 +202,33 @@ export function MessageList() {
           }}
           itemContent={(_, item) => {
             if (item.type === 'date') {
+              const { isDayBreak, dayLabel, timeLabel } = item.data as {
+                isDayBreak: boolean
+                dayLabel: string
+                timeLabel: string
+              }
+              if (isDayBreak) {
+                return (
+                  <div className="flex items-center gap-3 px-6 pt-6 pb-3 select-none">
+                    <div className="flex-1 h-px bg-border" />
+                    <div className="flex flex-col items-center gap-0.5">
+                      <span className="text-sm font-semibold tracking-wide text-foreground/80">
+                        {dayLabel}
+                      </span>
+                      {timeLabel && (
+                        <span className="text-[11px] text-muted-foreground">
+                          {timeLabel}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex-1 h-px bg-border" />
+                  </div>
+                )
+              }
               return (
-                <div className="flex justify-center py-4">
-                  <span className="text-xs text-muted-foreground bg-muted/30 px-2 py-1 rounded-full">
-                    {item.data}
+                <div className="flex justify-center py-3 select-none">
+                  <span className="text-xs text-muted-foreground bg-muted/40 px-2.5 py-1 rounded-full">
+                    {timeLabel}
                   </span>
                 </div>
               )
@@ -244,8 +287,18 @@ export function MessageList() {
             size="icon"
             className="rounded-full shadow-md opacity-80 hover:opacity-100 transition-opacity"
             onClick={() => setIsDatePickerOpen(true)}
+            title="按日期查找"
           >
             <CalendarIcon className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="secondary"
+            size="icon"
+            className="rounded-full shadow-md opacity-80 hover:opacity-100 transition-opacity"
+            onClick={() => setIsVoiceMissingOpen(true)}
+            title="缺失语音转写"
+          >
+            <Mic className="h-4 w-4" />
           </Button>
           {showScrollTop && (
             <Button
@@ -269,6 +322,17 @@ export function MessageList() {
         onSelect={(index) => {
           virtuosoRef.current?.scrollToIndex({ index, align: 'start' })
           setIsDatePickerOpen(false)
+        }}
+      />
+
+      <VoiceMissingModal
+        isOpen={isVoiceMissingOpen}
+        onClose={() => setIsVoiceMissingOpen(false)}
+        messages={allMessages}
+        dateMap={dateMap}
+        onSelectDay={(index) => {
+          virtuosoRef.current?.scrollToIndex({ index, align: 'start' })
+          setIsVoiceMissingOpen(false)
         }}
       />
 

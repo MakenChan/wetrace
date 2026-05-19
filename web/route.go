@@ -92,6 +92,7 @@ func (s *Service) setupRoutes() {
 		v1.POST("/media/cache/start", s.api.HandleStartCache)
 		v1.GET("/media/cache/status", s.api.GetCacheStatus)
 		v1.POST("/media/voice/transcribe", s.api.TranscribeVoice)
+		v1.POST("/media/voice/batch-transcribe", s.api.BatchTranscribeVoice)
 
 		// 导出路由
 		v1.GET("/export/chat", s.api.ExportChat)

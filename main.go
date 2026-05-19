@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"syscall"
 
+	"github.com/afumu/wetrace/internal/transcribe"
 	"github.com/afumu/wetrace/store"
 	"github.com/afumu/wetrace/web"
 	"github.com/spf13/viper"
@@ -81,6 +82,14 @@ func main() {
 	}
 	defer newStore.Close()
 	log.Println("Store 初始化成功。")
+
+	// --- 初始化语音转写本地缓存（独立 wetrace.db，不污染微信 DB）---
+	if voiceCache, err := transcribe.NewCache(workDir); err != nil {
+		log.Printf("警告：初始化语音转写缓存失败，将继续但本地转写结果不会持久化: %v", err)
+	} else {
+		newStore.SetVoiceCache(voiceCache)
+		log.Println("语音转写缓存初始化成功。")
+	}
 
 	// --- 准备静态文件系统 ---
 	staticFS, err := fs.Sub(uiDist, "ui/dist")

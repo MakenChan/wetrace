@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/afumu/wetrace/internal/model"
+	"github.com/afumu/wetrace/internal/transcribe"
 	"github.com/afumu/wetrace/store/bind"
 	"github.com/afumu/wetrace/store/core"
 	"github.com/afumu/wetrace/store/repo"
@@ -15,10 +16,22 @@ import (
 
 // DefaultStore 是 Store 接口的默认实现
 type DefaultStore struct {
-	pool    *core.ConnectionPool
-	router  *bind.TimelineRouter
-	watcher *core.Watcher
-	repo    *repo.Repository
+	pool       *core.ConnectionPool
+	router     *bind.TimelineRouter
+	watcher    *core.Watcher
+	repo       *repo.Repository
+	voiceCache *transcribe.Cache // 可选，nil 表示未启用本地转写缓存
+}
+
+// SetVoiceCache 注入语音转写缓存。nil 表示关闭。
+// 注入后，GetMessages 返回的语音消息会把本地缓存的 voiceText 注入到 Contents。
+func (s *DefaultStore) SetVoiceCache(c *transcribe.Cache) {
+	s.voiceCache = c
+}
+
+// VoiceCache 暴露缓存句柄供上层读写（例如 TranscribeVoice handler 写入结果）。
+func (s *DefaultStore) VoiceCache() *transcribe.Cache {
+	return s.voiceCache
 }
 
 // NewStore 初始化一个新的存储实例
@@ -68,13 +81,73 @@ func NewStore(baseDir string) (*DefaultStore, error) {
 
 func (s *DefaultStore) Close() error {
 	s.watcher.Stop()
+	if s.voiceCache != nil {
+		_ = s.voiceCache.Close()
+	}
 	return s.pool.CloseAll()
 }
 
 // --- 下面是 Store 接口的代理实现 ---
 
 func (s *DefaultStore) GetMessages(ctx context.Context, query types.MessageQuery) ([]*model.Message, error) {
-	return s.repo.GetMessages(ctx, query)
+	msgs, err := s.repo.GetMessages(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	s.injectVoiceCache(msgs)
+	return msgs, nil
+}
+
+// injectVoiceCache 把本地转写缓存的文本挂到语音消息的 Contents 上。
+// 规则：
+//   - 微信原生（Contents["voiceText"] 已存在）→ 标记 voiceTextSource="wechat"，不覆盖；
+//   - 本地缓存命中 → 填 voiceText + voiceTextSource="local"。
+func (s *DefaultStore) injectVoiceCache(msgs []*model.Message) {
+	if s.voiceCache == nil || len(msgs) == 0 {
+		return
+	}
+	// 收集需要查询的 voice id
+	ids := make([]string, 0)
+	for _, m := range msgs {
+		if m == nil || m.Type != model.MessageTypeVoice || m.Contents == nil {
+			continue
+		}
+		// 微信原生已有文本：打标记，跳过本地查询
+		if vt, _ := m.Contents["voiceText"].(string); vt != "" {
+			m.Contents["voiceTextSource"] = "wechat"
+			continue
+		}
+		if vid, ok := m.Contents["voice"].(string); ok && vid != "" {
+			ids = append(ids, vid)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	cached, err := s.voiceCache.GetMany(ids)
+	if err != nil || len(cached) == 0 {
+		return
+	}
+	for _, m := range msgs {
+		if m == nil || m.Type != model.MessageTypeVoice || m.Contents == nil {
+			continue
+		}
+		if vt, _ := m.Contents["voiceText"].(string); vt != "" {
+			continue
+		}
+		vid, _ := m.Contents["voice"].(string)
+		if vid == "" {
+			continue
+		}
+		if e, ok := cached[vid]; ok && e.Text != "" {
+			m.Contents["voiceText"] = e.Text
+			if e.Engine != "" {
+				m.Contents["voiceTextSource"] = e.Engine
+			} else {
+				m.Contents["voiceTextSource"] = "local"
+			}
+		}
+	}
 }
 
 func (s *DefaultStore) SearchGlobalMessages(ctx context.Context, query types.MessageQuery) ([]*model.Message, error) {

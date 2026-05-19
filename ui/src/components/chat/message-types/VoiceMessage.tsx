@@ -3,19 +3,60 @@ import { mediaApi } from "@/api/media"
 import { cn } from "@/lib/utils"
 import { Loader2, Type } from "lucide-react"
 
+/**
+ * 从各种错误对象里提取对用户友好的短提示。
+ * 特别处理：后端返回的底层 TCP 拒连信息（说明本地 SenseVoice 服务没启动）。
+ */
+function extractErrorMessage(err: unknown): string {
+  const anyErr = err as {
+    response?: { data?: { message?: string; error?: string } }
+    message?: string
+  } | null | undefined
+  const raw: string =
+    anyErr?.response?.data?.message ||
+    anyErr?.response?.data?.error ||
+    anyErr?.message ||
+    String(err ?? "")
+  const s = raw.trim()
+  if (!s) return "未知错误"
+  // 典型：... dial tcp 127.0.0.1:5210: connectex: No connection could be made ...
+  if (/dial tcp.*(5210|refused|actively refused)/i.test(s) || /connectex/i.test(s)) {
+    return "本地语音识别服务未启动（端口 5210）"
+  }
+  if (/timeout/i.test(s)) return "语音识别服务响应超时"
+  // 太长的后端堆栈裁一下
+  return s.length > 120 ? s.slice(0, 120) + "…" : s
+}
+
+
 interface VoiceMessageProps {
   id: string
   isSelf?: boolean
   duration?: number
+  /**
+   * 已有的语音转文字结果。可能来自：
+   *  - 微信客户端 packed_info_data（textSource=wechat）
+   *  - wetrace 本地 SenseVoice 缓存（textSource=local）
+   * 若存在则组件挂载时直接展示，无需再点「转文字」按钮。
+   */
+  initialText?: string
+  /** 已有文本的来源；首次由用户点击 mic 本地转写后，内部会置为 "local"。 */
+  textSource?: "wechat" | "local" | string
 }
 
-export function VoiceMessage({ id, isSelf, duration }: VoiceMessageProps) {
+export function VoiceMessage({ id, isSelf, duration, initialText, textSource }: VoiceMessageProps) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [animationStep, setAnimationStep] = useState(3)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const animationIntervalRef = useRef<number | null>(null)
-  const [transcribeText, setTranscribeText] = useState<string | null>(null)
+  const [transcribeText, setTranscribeText] = useState<string | null>(initialText ?? null)
   const [isTranscribing, setIsTranscribing] = useState(false)
+  // 转写失败信息。与 transcribeText 分离，避免把错误当成识别结果展示、也避免按钮消失。
+  const [transcribeError, setTranscribeError] = useState<string | null>(null)
+  // 当前文本来源：优先使用 props 给的；若用户点击 mic 成功转写则变为 "local"。
+  const [source, setSource] = useState<"wechat" | "local" | null>(
+    initialText ? (textSource === "wechat" ? "wechat" : textSource === "local" ? "local" : "wechat") : null
+  )
 
   const voiceUrl = mediaApi.getVoiceUrl(id)
   
@@ -91,11 +132,20 @@ export function VoiceMessage({ id, isSelf, duration }: VoiceMessageProps) {
     e.stopPropagation()
     if (isTranscribing || transcribeText !== null) return
     setIsTranscribing(true)
+    setTranscribeError(null)
     try {
       const res = await mediaApi.transcribeVoice(id)
-      setTranscribeText(res.text || "(无识别结果)")
-    } catch (err: any) {
-      setTranscribeText("转文字失败: " + (err?.message || "未知错误"))
+      const text = (res.text || "").trim()
+      if (!text) {
+        setTranscribeError("未识别出文字内容")
+        return
+      }
+      setTranscribeText(text)
+      setSource("local")
+    } catch (err) {
+      // 错误不写入 transcribeText：保留 T 按钮，允许重试；错误独立红字展示。
+      const msg = extractErrorMessage(err)
+      setTranscribeError(msg)
     } finally {
       setIsTranscribing(false)
     }
@@ -134,10 +184,15 @@ export function VoiceMessage({ id, isSelf, duration }: VoiceMessageProps) {
         {/* Transcribe button */}
         {transcribeText === null && (
           <button
-            className="shrink-0 ml-1 p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 text-muted-foreground hover:text-foreground transition-colors"
+            className={cn(
+              "shrink-0 ml-1 p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 transition-colors",
+              transcribeError
+                ? "text-red-500 hover:text-red-600"
+                : "text-muted-foreground hover:text-foreground"
+            )}
             onClick={handleTranscribe}
             disabled={isTranscribing}
-            title="转文字"
+            title={transcribeError ? `转文字失败，点击重试：${transcribeError}` : "转文字"}
           >
             {isTranscribing ? (
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -148,12 +203,36 @@ export function VoiceMessage({ id, isSelf, duration }: VoiceMessageProps) {
         )}
       </div>
 
+      {/* Error banner：只在无文本 + 有错误时显示；点击可重试 */}
+      {transcribeText === null && transcribeError && (
+        <div
+          className={cn(
+            "text-xs px-3 py-1 max-w-[260px] cursor-pointer select-text text-red-600 dark:text-red-400",
+            isSelf ? "text-right" : "text-left"
+          )}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (!isTranscribing) handleTranscribe(e)
+          }}
+          title="点击重试"
+        >
+          <span className="mr-1 align-middle text-[10px] opacity-80">[失败]</span>
+          {transcribeError}
+        </div>
+      )}
+
       {/* Transcribed text */}
       {transcribeText !== null && (
         <div className={cn(
           "text-xs text-foreground/70 px-3 py-1 max-w-[240px]",
           isSelf ? "text-right" : "text-left"
         )}>
+          {source === "wechat" && (
+            <span className="mr-1 align-middle text-[10px] text-sky-600/80 dark:text-sky-400/80">[微信]</span>
+          )}
+          {source === "local" && (
+            <span className="mr-1 align-middle text-[10px] text-emerald-600/80 dark:text-emerald-400/80">[识别]</span>
+          )}
           {transcribeText}
         </div>
       )}

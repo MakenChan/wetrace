@@ -15,6 +15,44 @@ type MediaMsg struct {
 	App      App      `xml:"appmsg,omitempty"`
 	Emoji    Emoji    `xml:"emoji,omitempty"`
 	Location Location `xml:"location,omitempty"`
+	VoIP     *VoIPMsg `xml:"voipmsg,omitempty"`
+}
+
+// VoIPMsg 表示语音/视频通话结果气泡。
+// 实测样本（V4）形态：
+//
+//	<voipmsg type="VoIPBubbleMsg">
+//	  <VoIPBubbleMsg>
+//	    <msg><![CDATA[通话时长 05:30]]></msg>      文案，与微信客户端显示完全一致
+//	    <room_type>0</room_type>                   0=视频通话, 1=语音通话
+//	    <duration>330</duration>                   接通时长（秒）；未接通为 0
+//	    <red_dot>true|false</red_dot>              是否有未读红点
+//	    <msg_type>100|101</msg_type>               100=主动落库, 101=被动落库（如"已在其它设备接听"）
+//	    ...其余 roomid/inviteid/identity/business 等协议字段
+//	  </VoIPBubbleMsg>
+//	</voipmsg>
+//
+// 文案枚举（来自真实样本统计，含义直接照搬）：
+//
+//	"通话时长 MM:SS" 或 "通话时长 HH:MM:SS"
+//	"已取消"          —— 自己主动取消，未接通
+//	"对方已取消"      —— 对方主动取消，未接通
+//	"对方无应答"      —— 对方超时未接
+//	"未应答"          —— 自己超时未接
+//	"对方已拒绝"      —— 对方主动拒绝
+//	"已在其它设备接听" —— 同账号在别的设备接了
+//	"已在其它设备拒绝" —— 同账号在别的设备拒了
+type VoIPMsg struct {
+	Type   string         `xml:"type,attr"`
+	Bubble *VoIPBubbleMsg `xml:"VoIPBubbleMsg,omitempty"`
+}
+
+type VoIPBubbleMsg struct {
+	Msg      string `xml:"msg"`
+	RoomType string `xml:"room_type"`
+	Duration string `xml:"duration"`
+	MsgType  string `xml:"msg_type"`
+	RedDot   string `xml:"red_dot"`
 }
 
 type VoiceMsg struct {
