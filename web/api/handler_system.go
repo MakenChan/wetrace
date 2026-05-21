@@ -10,6 +10,7 @@ import (
 	"github.com/afumu/wetrace/internal/ai"
 	"github.com/afumu/wetrace/internal/tts"
 	"github.com/afumu/wetrace/pkg/util"
+	"github.com/afumu/wetrace/pkg/version"
 	"github.com/afumu/wetrace/web/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
@@ -109,6 +110,8 @@ func (a *API) GetSystemStatus(c *gin.Context) {
 	// 获取当前配置中的密钥，用于前端判断是否存在
 	status := gin.H{
 		"store_initialized": true,
+		"version":           version.Version,
+		"build_time":        version.BuildTime,
 		"config": gin.H{
 			"wechat_db_key":      a.Conf.WechatDbKey,
 			"image_key":          a.Media.ImageKey,

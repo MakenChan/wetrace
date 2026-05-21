@@ -3,6 +3,7 @@ package api
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/md5"
 	"fmt"
 	"net/http"
@@ -10,9 +11,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/afumu/wetrace/internal/model"
+	"github.com/afumu/wetrace/internal/transcribe"
 	"github.com/afumu/wetrace/store/types"
 	"github.com/afumu/wetrace/web/transport"
 	"github.com/gin-gonic/gin"
@@ -425,6 +428,19 @@ func (a *API) TranscribeVoice(c *gin.Context) {
 		return
 	}
 
+	// 持久化到本地缓存：下次加载该会话时前端直接看到 [识别] 前缀的文本
+	if text != "" {
+		if holder, ok := a.Store.(interface {
+			VoiceCache() *transcribe.Cache
+		}); ok {
+			if cache := holder.VoiceCache(); cache != nil {
+				if putErr := cache.Put(req.ID, text, "local"); putErr != nil {
+					log.Warn().Err(putErr).Str("id", req.ID).Msg("写入语音转写缓存失败")
+				}
+			}
+		}
+	}
+
 	transport.SendSuccess(c, gin.H{"text": text})
 }
 
@@ -593,4 +609,171 @@ func sanitizeFileName(name string) string {
 		result = result[:50]
 	}
 	return result
+}
+
+// BatchTranscribeRequest 批量转写请求体
+type BatchTranscribeRequest struct {
+	Talker      string `json:"talker"`                 // 必填：会话对象 wxid / chatroom
+	SkipWeChat  bool   `json:"skipWechat,omitempty"`   // true = 跳过微信已转写的（默认跳过）
+	SkipCached  bool   `json:"skipCached,omitempty"`   // true = 跳过本地缓存已有的（默认跳过）
+	Concurrency int    `json:"concurrency,omitempty"`  // 并发数，默认 1
+	Limit       int    `json:"limit,omitempty"`        // 最多处理多少条，0 = 无限
+}
+
+// BatchTranscribeResponse 批量转写响应
+type BatchTranscribeResponse struct {
+	Total        int      `json:"total"`        // 扫描到的语音消息总数
+	SkippedWx    int      `json:"skippedWx"`    // 因已有微信转写跳过
+	SkippedCache int      `json:"skippedCache"` // 因已有本地缓存跳过
+	Processed    int      `json:"processed"`    // 本次新转写成功数
+	Failed       int      `json:"failed"`       // 失败数
+	Errors       []string `json:"errors,omitempty"`
+}
+
+// BatchTranscribeVoice 对指定会话的语音消息做批量本地转写，结果持久化到 wetrace.db。
+func (a *API) BatchTranscribeVoice(c *gin.Context) {
+	if a.TTS == nil {
+		transport.BadRequest(c, "语音转文字功能未启用，请先在设置中配置")
+		return
+	}
+
+	holder, ok := a.Store.(interface {
+		VoiceCache() *transcribe.Cache
+	})
+	var cache *transcribe.Cache
+	if ok {
+		cache = holder.VoiceCache()
+	}
+
+	var req BatchTranscribeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		transport.BadRequest(c, "参数错误: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(req.Talker) == "" {
+		transport.BadRequest(c, "talker 必填")
+		return
+	}
+
+	// 1. 拉全量语音消息
+	ctx := c.Request.Context()
+	msgs, err := a.Store.GetMessages(ctx, types.MessageQuery{
+		Talker:    req.Talker,
+		MsgType:   model.MessageTypeVoice,
+		StartTime: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC),
+		EndTime:   time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC),
+		Limit:     1000000,
+	})
+	if err != nil {
+		transport.InternalServerError(c, "拉取消息失败: "+err.Error())
+		return
+	}
+
+	resp := BatchTranscribeResponse{}
+	// 2. 过滤 & 收集待处理 id
+	type job struct {
+		msgID string
+	}
+	var jobs []job
+	for _, m := range msgs {
+		if m == nil || m.Type != model.MessageTypeVoice || m.Contents == nil {
+			continue
+		}
+		resp.Total++
+
+		// 微信原生已转：injectVoiceCache 会给未读前的原始消息打 voiceTextSource；
+		// 这里直接看来源，已经有文本的跳过（当前批量接口语义：永远跳过已有文本）。
+		src, _ := m.Contents["voiceTextSource"].(string)
+		existText, _ := m.Contents["voiceText"].(string)
+		if src == "wechat" && existText != "" {
+			resp.SkippedWx++
+			continue
+		}
+		if src == "local" && existText != "" {
+			resp.SkippedCache++
+			continue
+		}
+
+		vid, _ := m.Contents["voice"].(string)
+		if vid == "" {
+			continue
+		}
+		jobs = append(jobs, job{msgID: vid})
+		if req.Limit > 0 && len(jobs) >= req.Limit {
+			break
+		}
+	}
+
+	if len(jobs) == 0 {
+		transport.SendSuccess(c, resp)
+		return
+	}
+
+	// 3. 并发转写
+	concurrency := req.Concurrency
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	if concurrency > 8 {
+		concurrency = 8
+	}
+
+	jobCh := make(chan job, len(jobs))
+	for _, j := range jobs {
+		jobCh <- j
+	}
+	close(jobCh)
+
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobCh {
+				// 每个 worker 各自走 GetMedia + Prepare + Transcribe
+				mediaInfo, err := a.Store.GetMedia(context.Background(), "voice", j.msgID)
+				if err != nil {
+					mu.Lock()
+					resp.Failed++
+					if len(resp.Errors) < 20 {
+						resp.Errors = append(resp.Errors, fmt.Sprintf("%s: 获取媒体失败 %v", j.msgID, err))
+					}
+					mu.Unlock()
+					continue
+				}
+				prepared := a.Media.Prepare(mediaInfo, false)
+				if prepared.Error != nil || len(prepared.Content) == 0 {
+					mu.Lock()
+					resp.Failed++
+					if len(resp.Errors) < 20 {
+						resp.Errors = append(resp.Errors, fmt.Sprintf("%s: 解码语音失败", j.msgID))
+					}
+					mu.Unlock()
+					continue
+				}
+				text, err := a.TTS.Transcribe(prepared.Content, "voice.mp3")
+				if err != nil {
+					mu.Lock()
+					resp.Failed++
+					if len(resp.Errors) < 20 {
+						resp.Errors = append(resp.Errors, fmt.Sprintf("%s: %v", j.msgID, err))
+					}
+					mu.Unlock()
+					continue
+				}
+				if cache != nil && text != "" {
+					if putErr := cache.Put(j.msgID, text, "local"); putErr != nil {
+						log.Warn().Err(putErr).Str("id", j.msgID).Msg("写入缓存失败")
+					}
+				}
+				mu.Lock()
+				resp.Processed++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	transport.SendSuccess(c, resp)
 }

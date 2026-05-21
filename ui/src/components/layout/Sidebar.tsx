@@ -39,6 +39,29 @@ export function Sidebar() {
   const [isSyncing, setIsSyncing] = useState(false)
   const [showKeyManager, setShowKeyManager] = useState(false)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const [buildTime, setBuildTime] = useState<string>('')
+
+  // 启动时拉一次系统状态，拿构建时间显示在 logo 下
+  useEffect(() => {
+    let cancelled = false
+    systemApi.getStatus()
+      .then((res: any) => {
+        if (cancelled) return
+        const bt = res?.build_time ?? res?.data?.build_time ?? ''
+        setBuildTime(bt)
+      })
+      .catch(() => {/* 忽略：显示空即可 */})
+    return () => { cancelled = true }
+  }, [])
+
+  // 把 ISO 时间渲染成紧凑形式：MM-DD HH:mm
+  const buildTimeShort = (() => {
+    if (!buildTime) return ''
+    const d = new Date(buildTime)
+    if (isNaN(d.getTime())) return buildTime
+    const pad = (n: number) => String(n).padStart(2, '0')
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  })()
 
   const navEntries: NavEntry[] = [
     { key: 'chat', icon: MessageSquare, label: '聊天', path: '/chat' },
@@ -232,6 +255,14 @@ export function Sidebar() {
         >
           <MessageSquare className="w-5 h-5" />
           <span className="font-semibold text-sm">WeTrace</span>
+          {buildTimeShort && (
+            <span
+              className="ml-1 px-1.5 py-0.5 rounded bg-muted text-muted-foreground text-[10px] font-normal leading-none"
+              title={`构建时间: ${buildTime}`}
+            >
+              {buildTimeShort}
+            </span>
+          )}
         </div>
       </div>
 

@@ -64,6 +64,10 @@ func (a *API) ExportChat(c *gin.Context) {
 		data, err = a.Export.ExportChatPDF(ctx, talker, talkerName, start, end)
 		fileName = fmt.Sprintf("chat_export_%s_%s.pdf", talkerName, talker)
 		contentType = "application/pdf"
+	case "yaml":
+		data, err = a.Export.ExportChatYAML(ctx, talker, talkerName, start, end)
+		fileName = fmt.Sprintf("chat_export_%s_%s.yaml", talkerName, talker)
+		contentType = "application/x-yaml; charset=utf-8"
 	default:
 		// 默认导出 HTML ZIP
 		data, err = a.Export.ExportChat(ctx, talker, talkerName, start, end)

@@ -85,6 +85,19 @@ func FindWeChatInstallPaths() []string {
 	return result
 }
 
+// looksLikeAccountDir 判断一个目录是否像微信账号目录。
+// 判定依据：目录内存在 db_storage / msg / FileStorage 三个典型子目录之一。
+// 这样不依赖目录名前缀，能兼容自定义微信号命名。
+func looksLikeAccountDir(dir string) bool {
+	markers := []string{"db_storage", "msg", "FileStorage"}
+	for _, m := range markers {
+		if info, err := os.Stat(filepath.Join(dir, m)); err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
 // FindWeChatDataPaths 查找微信数据存储路径
 func FindWeChatDataPaths() []string {
 	basePaths := make(map[string]struct{})
@@ -131,7 +144,9 @@ func FindWeChatDataPaths() []string {
 		addBaseIfValid(filepath.Join(home, "OneDrive", "Documents"))
 	}
 
-	// 3. Scan for wxid_ subdirectories
+	// 3. Scan for account subdirectories
+	// 不再要求必须是 wxid_ 前缀：只要子目录里存在 db_storage / msg / FileStorage
+	// 中的任意一个，就视为账号目录。这样可以兼容自定义微信号命名。
 	finalPaths := make(map[string]struct{})
 	for base := range basePaths {
 		entries, err := os.ReadDir(base)
@@ -140,16 +155,29 @@ func FindWeChatDataPaths() []string {
 			continue
 		}
 
-		foundWxid := false
+		foundAccount := false
 		for _, entry := range entries {
-			if entry.IsDir() && strings.HasPrefix(entry.Name(), "wxid_") {
-				finalPaths[filepath.Join(base, entry.Name())] = struct{}{}
-				foundWxid = true
+			if !entry.IsDir() {
+				continue
+			}
+			name := entry.Name()
+			// 跳过已知的非账号目录
+			lower := strings.ToLower(name)
+			if lower == "all_users" ||
+				strings.HasPrefix(lower, "applet") ||
+				strings.HasPrefix(lower, "backup") ||
+				strings.HasPrefix(lower, "wmpf") {
+				continue
+			}
+			sub := filepath.Join(base, name)
+			if looksLikeAccountDir(sub) {
+				finalPaths[sub] = struct{}{}
+				foundAccount = true
 			}
 		}
 
-		// If no wxid_ folders were found in this base, keep the base itself
-		if !foundWxid {
+		// If no account folders were found in this base, keep the base itself
+		if !foundAccount {
 			finalPaths[base] = struct{}{}
 		}
 	}

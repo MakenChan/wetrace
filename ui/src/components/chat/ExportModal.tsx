@@ -1,12 +1,12 @@
 import { useState } from "react"
 import { createPortal } from "react-dom"
-import { X, Calendar, FileJson, FileText, Globe, FileSpreadsheet, FileType, Shield } from "lucide-react"
+import { X, Calendar, FileJson, FileText, Globe, FileSpreadsheet, FileType, Shield, Bot } from "lucide-react"
 import { Button } from "../ui/button"
 import { cn } from "@/lib/utils"
 import { Label } from "../ui/label"
 import { Input } from "../ui/input"
 
-type ExportFormat = 'html' | 'json' | 'txt' | 'csv' | 'xlsx' | 'docx' | 'forensic'
+type ExportFormat = 'html' | 'json' | 'txt' | 'csv' | 'xlsx' | 'docx' | 'forensic' | 'yaml'
 
 interface ExportModalProps {
   isOpen: boolean
@@ -38,6 +38,7 @@ export function ExportModal({ isOpen, onClose, onExport }: ExportModalProps) {
     { id: 'xlsx' as const, label: 'Excel 表格', icon: FileSpreadsheet, desc: 'Excel格式，带表头和格式' },
     { id: 'docx' as const, label: 'Word 文档', icon: FileType, desc: 'Word格式，按日期分段排版' },
     { id: 'json' as const, label: 'JSON数据', icon: FileJson, desc: '原始数据，适合开发者' },
+    { id: 'yaml' as const, label: 'AI 分析 (YAML)', icon: Bot, desc: '面向 LLM 的精简结构，按日分组、降噪去链接' },
     { id: 'forensic' as const, label: '法律取证导出', icon: Shield, desc: '含HTML取证报告、数据校验、取证水印、签名区域' },
   ]
 

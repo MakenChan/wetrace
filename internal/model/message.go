@@ -155,7 +155,19 @@ func (m *Message) ParseMediaInfo(data string) error {
 	var msg MediaMsg
 	err := xml.Unmarshal([]byte(data), &msg)
 	if err != nil {
-		return err
+		// type=50 的特殊兼容：部分 V4 数据库里 type=50 的 content 不是 <msg>...</msg>，
+		// 而是直接以 <voipmsg type="VoIPBubbleMsg">...</voipmsg> 作为根元素。
+		// 此时 MediaMsg 的根标签 <msg> 不匹配会导致 Unmarshal 失败——这里单独再试 VoIPMsg 根。
+		if m.Type == MessageTypeVOIP {
+			var v VoIPMsg
+			if err2 := xml.Unmarshal([]byte(data), &v); err2 == nil {
+				msg.VoIP = &v
+				err = nil
+			}
+		}
+		if err != nil {
+			return err
+		}
 	}
 
 	if m.Contents == nil {
@@ -295,6 +307,40 @@ func (m *Message) ParseMediaInfo(data string) error {
 			}
 			m.Content = fmt.Sprintf("[转账|%s%s]%s", _type, msg.App.WCPayInfo.FeeDesc, payMemo)
 		}
+	case MessageTypeVOIP:
+		// 语音/视频通话结果气泡。XML 形态见 VoIPMsg 定义。
+		// room_type: 0=视频, 1=语音；duration 是接通时长（秒）；msg 是直接显示给用户的中文文案。
+		callType := "voice"
+		callLabel := "语音通话"
+		if msg.VoIP != nil && msg.VoIP.Bubble != nil {
+			b := msg.VoIP.Bubble
+			if b.RoomType == "0" {
+				callType = "video"
+				callLabel = "视频通话"
+			}
+			m.Contents["calltype"] = callType
+			text := strings.TrimSpace(b.Msg)
+			if text != "" {
+				m.Contents["text"] = text
+			}
+			if b.Duration != "" && b.Duration != "0" {
+				if d, err := strconv.Atoi(b.Duration); err == nil && d > 0 {
+					m.Contents["duration"] = d
+				}
+			}
+			if b.MsgType != "" {
+				m.Contents["msgtype"] = b.MsgType
+			}
+			if text != "" {
+				m.Content = "[" + callLabel + "] " + text
+			} else {
+				m.Content = "[" + callLabel + "]"
+			}
+		} else {
+			// 既不是 VoIPBubbleMsg，也兜底
+			m.Contents["calltype"] = callType
+			m.Content = "[" + callLabel + "]"
+		}
 	}
 
 	return nil
@@ -376,8 +422,15 @@ func (m *Message) PlainTextContent() string {
 		}
 		return fmt.Sprintf("![图片](http://%s/image/%s)", m.Contents["host"], strings.Join(keylist, ","))
 	case MessageTypeVoice:
+		voiceText := ""
+		if vt, ok := m.Contents["voiceText"].(string); ok && vt != "" {
+			voiceText = " " + vt
+		}
 		if voice, ok := m.Contents["voice"]; ok {
-			return fmt.Sprintf("[语音](http://%s/voice/%s)", m.Contents["host"], voice)
+			return fmt.Sprintf("[语音](http://%s/voice/%s)%s", m.Contents["host"], voice, voiceText)
+		}
+		if voiceText != "" {
+			return "[语音]" + voiceText
 		}
 		return "[语音]"
 	case MessageTypeCard:
@@ -555,7 +608,10 @@ func (m *Message) PlainTextContent() string {
 			return "[分享]"
 		}
 	case MessageTypeVOIP:
-		return "[语音通话]"
+		if m.Content != "" {
+			return m.Content
+		}
+		return "[语音/视频通话]"
 	case MessageTypeSystem:
 		return m.Content
 	default:

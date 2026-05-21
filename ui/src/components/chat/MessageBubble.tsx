@@ -13,6 +13,7 @@ import { LinkCardMessage } from "./message-types/LinkCardMessage"
 import { RedPacketMessage } from "./message-types/RedPacketMessage"
 import { TransferMessage } from "./message-types/TransferMessage"
 import { FileCardMessage } from "./message-types/FileCardMessage"
+import { VoiceCallMessage } from "./message-types/VoiceCallMessage"
 import { mediaApi } from "@/api/media"
 
 interface MessageBubbleProps {
@@ -59,9 +60,17 @@ export function MessageBubble({ message, showAvatar = true, showTime = false, sh
       case MessageType.Image:
         return <ImageMessage id={message.id || message.seq} md5={message.contents?.md5} path={message.contents?.path} content={message.content} />
       case MessageType.Voice:
-        return <VoiceMessage id={message.contents?.voice} isSelf={isSelf} duration={message.duration} />
+        return <VoiceMessage
+          id={message.contents?.voice}
+          isSelf={isSelf}
+          duration={message.duration}
+          initialText={message.contents?.voiceText}
+          textSource={message.contents?.voiceTextSource}
+        />
       case MessageType.Video:
         return <VideoMessage md5={message.contents?.md5} />
+      case MessageType.VoiceCall:
+        return <VoiceCallMessage message={message} isSelf={isSelf} />
       case MessageType.Emoji:
         return <EmojiMessage contents={message.contents} />
       case MessageType.File:

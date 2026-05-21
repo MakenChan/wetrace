@@ -24,6 +24,27 @@ export function DatePickerModal({ isOpen, onClose, dateMap, onSelect }: DatePick
     return new Set(Object.keys(dateMap))
   }, [dateMap])
 
+  // 根据数据范围限定年份下拉框；没有数据时退化为 近 10 年 ~ 今天
+  const { startMonth, endMonth } = useMemo(() => {
+    const keys = Object.keys(dateMap)
+    const today = new Date()
+    if (keys.length === 0) {
+      const s = new Date(today)
+      s.setFullYear(s.getFullYear() - 10)
+      return { startMonth: s, endMonth: today }
+    }
+    keys.sort()
+    const first = new Date(keys[0] + "T00:00:00")
+    const last = new Date(keys[keys.length - 1] + "T00:00:00")
+    // 往前后各放宽 1 年，方便跨年切换
+    const s = new Date(first.getFullYear() - 1, 0, 1)
+    const e = new Date(Math.max(last.getTime(), today.getTime()))
+    e.setFullYear(e.getFullYear() + 1)
+    e.setMonth(11)
+    e.setDate(31)
+    return { startMonth: s, endMonth: e }
+  }, [dateMap])
+
   if (!isOpen) return null
 
   // Custom Day component or Modifiers to highlight dates with messages
@@ -62,6 +83,46 @@ export function DatePickerModal({ isOpen, onClose, dateMap, onSelect }: DatePick
               --rdp-background-color: hsl(var(--accent));
               margin: 0;
             }
+            .rdp-dropdowns {
+              display: flex;
+              gap: 8px;
+              justify-content: center;
+            }
+            .rdp-dropdown_root {
+              position: relative;
+            }
+            .rdp-dropdown {
+              appearance: none;
+              background-color: hsl(var(--background));
+              color: hsl(var(--foreground));
+              border: 1px solid hsl(var(--border));
+              border-radius: 6px;
+              padding: 4px 24px 4px 10px;
+              font-size: 14px;
+              font-weight: 600;
+              cursor: pointer;
+              outline: none;
+            }
+            .rdp-dropdown:hover {
+              background-color: hsl(var(--accent));
+            }
+            .rdp-dropdown:focus-visible {
+              box-shadow: 0 0 0 2px hsl(var(--primary) / 0.4);
+            }
+            .rdp-dropdown_root::after {
+              content: '';
+              position: absolute;
+              right: 8px;
+              top: 50%;
+              width: 0;
+              height: 0;
+              border-left: 4px solid transparent;
+              border-right: 4px solid transparent;
+              border-top: 5px solid currentColor;
+              transform: translateY(-50%);
+              pointer-events: none;
+              opacity: 0.6;
+            }
             .rdp-day_hasMessages {
               position: relative;
               background-color: hsl(var(--primary) / 0.1) !important;
@@ -91,6 +152,9 @@ export function DatePickerModal({ isOpen, onClose, dateMap, onSelect }: DatePick
             locale={zhCN}
             month={month}
             onMonthChange={setMonth}
+            captionLayout="dropdown"
+            startMonth={startMonth}
+            endMonth={endMonth}
             modifiers={modifiers}
             modifiersClassNames={{
               hasMessages: "rdp-day_hasMessages"

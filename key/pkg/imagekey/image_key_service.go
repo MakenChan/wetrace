@@ -177,13 +177,19 @@ func (s *ImageKeyService) scanForAccountDir(rootPath string) (string, error) {
 
 func (s *ImageKeyService) isPotentialAccountDirectory(dirName string) bool {
 	lower := strings.ToLower(dirName)
-	if strings.HasPrefix(lower, "all") ||
+	// 排除已知的非账号目录（系统目录、备份目录、applet / wmpf 等）
+	if lower == "all_users" ||
 		strings.HasPrefix(lower, "applet") ||
 		strings.HasPrefix(lower, "backup") ||
 		strings.HasPrefix(lower, "wmpf") {
 		return false
 	}
-	return strings.HasPrefix(dirName, "wxid_") || len(dirName) > 5
+	// 不再强制 wxid_ 前缀。只要不是明显的系统/隐藏目录即可，
+	// 真正的账号目录身份由 directoryHasDbStorage / directoryHasImageCache 判定。
+	if dirName == "" || strings.HasPrefix(dirName, ".") || strings.HasPrefix(dirName, "$") {
+		return false
+	}
+	return true
 }
 
 func (s *ImageKeyService) directoryHasDbStorage(path string) bool {

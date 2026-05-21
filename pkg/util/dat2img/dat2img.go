@@ -21,6 +21,11 @@ type Format struct {
 	Ext    string
 }
 
+// ErrNotImage 表示数据本身解密成功，但内容不是已知的图片格式
+// （例如 iPhone 实况照片的 .dat 解出来是 mp4/CMAF 视频）。
+// 上层调用方可以据此跳过当前候选文件，继续 fallback 下一个变体。
+var ErrNotImage = errors.New("decrypted content is not a recognized image format")
+
 var (
 	// Common image format definitions
 	JPG     = Format{Header: []byte{0xFF, 0xD8, 0xFF}, Ext: "jpg"}
@@ -28,6 +33,7 @@ var (
 	GIF     = Format{Header: []byte{0x47, 0x49, 0x46, 0x38}, Ext: "gif"}
 	TIFF    = Format{Header: []byte{0x49, 0x49, 0x2A, 0x00}, Ext: "tiff"}
 	BMP     = Format{Header: []byte{0x42, 0x4D}, Ext: "bmp"}
+	WEBP    = Format{Header: []byte{0x52, 0x49, 0x46, 0x46}, Ext: "webp"} // "RIFF"，需进一步校验 WEBP
 	WXGF    = Format{Header: []byte{0x77, 0x78, 0x67, 0x66}, Ext: "wxgf"}
 	Formats = []Format{JPG, PNG, GIF, TIFF, BMP, WXGF}
 
@@ -280,14 +286,59 @@ func Dat2ImageV4(data []byte, aesKey []byte) ([]byte, string, error) {
 	}
 
 	if imgType == "" {
+		// 解密成功但 magic 不在已知图片格式里，进一步识别 ISO BMFF 容器（HEIC/HEIF/AVIF/MP4 等）。
+		// ISO BMFF 文件的前 4 字节是 box size（big-endian），紧接着是 4 字节 box type "ftyp"，
+		// 然后从 offset 8 开始是 4 字节的 major brand。
+		if isoBrand := detectISOBMFFBrand(result); isoBrand != "" {
+			switch isoBrand {
+			// 静态图片类 brand：HEIC（iPhone 默认）、HEIF、AVIF 及其变体
+			case "heic", "heix", "heim", "heis", "hevc", "hevx",
+				"mif1", "msf1", "heif",
+				"avif", "avis":
+				// Windows 浏览器（Chrome/Edge）原生不支持 HEIC，统一用 ffmpeg 转成 JPEG 再吐回前端。
+				jpegData, convErr := Convert2JPG(result)
+				if convErr != nil {
+					return nil, "", fmt.Errorf("convert HEIC/AVIF (%s) to JPEG failed: %w", isoBrand, convErr)
+				}
+				return jpegData, "jpg", nil
+
+			// 视频/动态影像类 brand：iPhone 实况照片（Live Photo）的视频部分常见为 cmfc/qt/mp4 系
+			default:
+				// 明确告知上层："解密是成功的，但这玩意儿是 mp4/cmaf 视频，不是图片"
+				// 上层 fallback 应该跳过当前候选，继续试 _h.dat（实况照片的高清图）
+				return nil, "", fmt.Errorf("%w: ISO BMFF brand=%s", ErrNotImage, isoBrand)
+			}
+		}
+
 		// Fallback detection (check first bytes if header match failed)
 		if len(result) > 2 {
-			return nil, "", fmt.Errorf("unknown image type after decryption: %x %x", result[0], result[1])
+			return nil, "", fmt.Errorf("%w: unknown header %x %x", ErrNotImage, result[0], result[1])
 		}
-		return nil, "", errors.New("unknown image type")
+		return nil, "", fmt.Errorf("%w: empty content", ErrNotImage)
 	}
 
 	return result, imgType, nil
+}
+
+// detectISOBMFFBrand 检查数据是否是 ISO Base Media File Format 容器（HEIC/HEIF/AVIF/MP4 等），
+// 如果是则返回 4 字节的 major brand 字符串（小写），否则返回空字符串。
+//
+// ISO BMFF 文件结构（前 12 字节）：
+//
+//	[4 bytes big-endian box size][4 bytes "ftyp"][4 bytes major brand]
+//
+// 参考: ISO/IEC 14496-12
+func detectISOBMFFBrand(data []byte) string {
+	if len(data) < 12 {
+		return ""
+	}
+	// offset 4-8 必须是 "ftyp"
+	if !bytes.Equal(data[4:8], []byte{'f', 't', 'y', 'p'}) {
+		return ""
+	}
+	// offset 8-12 是 major brand
+	brand := strings.ToLower(strings.TrimSpace(string(data[8:12])))
+	return brand
 }
 
 // decryptAESECBStrict decrypts data using AES in ECB mode and strictly removes PKCS7 padding

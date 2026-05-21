@@ -8,7 +8,11 @@ import (
 )
 
 var (
-	Version   = "(dev)"
+	Version = "(dev)"
+	// BuildTime 在编译时通过 -ldflags "-X 'github.com/afumu/wetrace/pkg/version.BuildTime=...'" 注入。
+	// 推荐格式：本地时区 ISO 8601，例如 "2026-05-09T09:55:12+08:00"。
+	// 未注入时为空字符串，前端可据此降级显示。
+	BuildTime = ""
 	buildInfo = debug.BuildInfo{}
 )
 
